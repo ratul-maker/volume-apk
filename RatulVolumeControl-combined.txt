@@ -1,0 +1,508 @@
+
+==================== ./.github/workflows/build-apk.yml ====================
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build debug APK
+        run: gradle assembleDebug
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ratul-Volume-Control-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+
+==================== ./README.md ====================
+# Ratul Volume Control
+
+A native Android media-volume controller with a futuristic dark interface.
+
+## Features
+- Futuristic dark UI with cyan/blue accents
+- Circular live volume meter
+- Direct media-volume slider
+- Increase and decrease controls
+- Mute / unmute media
+- Refreshes the current media volume when the app resumes
+- Does not change ringtone, notification, or alarm volume
+- No special permissions required
+
+## Build an APK using GitHub Actions
+1. Create a GitHub repository.
+2. Upload the contents of this project, preserving the folder structure.
+3. Open the **Actions** tab.
+4. Run **Build Android APK** (or push to `main`).
+5. Download the `Ratul-Volume-Control-debug` artifact from the completed workflow.
+6. Extract the ZIP to get `app-debug.apk`.
+
+Target SDK: 35. Minimum SDK: 23 (Android 6.0+).
+
+
+==================== ./app/build.gradle ====================
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.ratul.volumecontrol'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.ratul.volumecontrol'
+        minSdk 23
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+    }
+}
+
+
+==================== ./app/src/main/AndroidManifest.xml ====================
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:allowBackup="true"
+        android:label="Ratul Volume Control"
+        android:theme="@android:style/Theme.Material.NoActionBar"
+        android:usesCleartextTraffic="false">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
+
+
+==================== ./app/src/main/java/com/ratul/volumecontrol/MainActivity.kt ====================
+package com.ratul.volumecontrol
+
+import android.app.Activity
+import android.content.Context
+import android.content.res.ColorStateList
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.Typeface
+import android.graphics.LinearGradient
+import android.graphics.Shader
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.media.AudioManager
+import android.os.Bundle
+import android.view.Gravity
+import android.view.View
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.SeekBar
+import android.widget.TextView
+import kotlin.math.min
+
+class MainActivity : Activity() {
+    private lateinit var audio: AudioManager
+    private lateinit var slider: SeekBar
+    private lateinit var dial: VolumeDialView
+    private lateinit var valueLabel: TextView
+    private lateinit var muteButton: Button
+    private var maxVolume = 15
+    private var lastNonZero = 1
+    private var updating = false
+
+    private val bg = Color.rgb(7, 11, 24)
+    private val panel = Color.rgb(17, 25, 45)
+    private val panel2 = Color.rgb(22, 33, 57)
+    private val white = Color.rgb(241, 247, 255)
+    private val muted = Color.rgb(137, 157, 187)
+    private val cyan = Color.rgb(67, 226, 240)
+    private val blue = Color.rgb(91, 129, 255)
+    private val purple = Color.rgb(157, 112, 255)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        maxVolume = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+        buildUi()
+        refresh()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::slider.isInitialized) refresh()
+    }
+
+    private fun buildUi() {
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(bg)
+            isFillViewport = true
+            overScrollMode = View.OVER_SCROLL_NEVER
+        }
+        val page = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(25), dp(22), dp(28))
+        }
+        scroll.addView(page)
+
+        // Brand header
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val logo = TextView(this).apply {
+            text = "〽"
+            textSize = 25f
+            gravity = Gravity.CENTER
+            setTextColor(bg)
+            background = roundedGradient(cyan, blue, 16)
+        }
+        header.addView(logo, LinearLayout.LayoutParams(dp(48), dp(48)))
+        val brand = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), 0, 0, 0)
+        }
+        brand.addView(label("RATUL", 12f, cyan, true, 0.22f))
+        brand.addView(label("VOLUME CONTROL", 11f, muted, true, 0.12f))
+        header.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
+        val live = TextView(this).apply {
+            text = "●  LIVE"
+            textSize = 10f
+            letterSpacing = 0.08f
+            setTextColor(cyan)
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = rounded(Color.rgb(14, 55, 66), 30)
+        }
+        header.addView(live)
+        page.addView(header)
+
+        val intro = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(30), 0, dp(18))
+        }
+        intro.addView(label("SOUND EXPERIENCE", 11f, muted, true, 0.2f))
+        intro.addView(label("Your audio.\nYour control.", 30f, white, true, 0f).apply {
+            setLineSpacing(dp(1).toFloat(), 1f)
+        })
+        intro.addView(label("Fine-tune your media output in real time.", 13f, muted, false, 0f).apply {
+            setPadding(0, dp(9), 0, 0)
+        })
+        page.addView(intro)
+
+        // Main control panel
+        val hero = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(20), dp(20), dp(20), dp(20))
+            background = roundedGradient(panel2, panel, 26)
+        }
+        val heroParams = LinearLayout.LayoutParams(-1, -2)
+        page.addView(hero, heroParams)
+
+        val topLine = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        topLine.addView(label("MEDIA OUTPUT", 11f, muted, true, 0.16f),
+            LinearLayout.LayoutParams(0, -2, 1f))
+        val streamTag = TextView(this).apply {
+            text = "♫  STREAM 01"
+            textSize = 9f
+            letterSpacing = 0.08f
+            setTextColor(Color.rgb(187, 174, 255))
+            setPadding(dp(9), dp(6), dp(9), dp(6))
+            background = rounded(Color.rgb(46, 39, 83), 20)
+        }
+        topLine.addView(streamTag)
+        hero.addView(topLine)
+
+        dial = VolumeDialView(this, cyan, blue, white)
+        val dialParams = LinearLayout.LayoutParams(dp(224), dp(224))
+        dialParams.gravity = Gravity.CENTER
+        dialParams.topMargin = dp(13)
+        hero.addView(dial, dialParams)
+
+        valueLabel = label("MEDIA VOLUME", 10f, muted, true, 0.18f).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(1), 0, dp(2))
+        }
+        hero.addView(valueLabel)
+
+        slider = SeekBar(this).apply {
+            max = maxVolume
+            progressTintList = ColorStateList.valueOf(cyan)
+            thumbTintList = ColorStateList.valueOf(white)
+            progressBackgroundTintList = ColorStateList.valueOf(Color.rgb(48, 65, 91))
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (fromUser && !updating) {
+                        audio.setStreamVolume(AudioManager.STREAM_MUSIC, progress, 0)
+                        render(progress)
+                    }
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            })
+        }
+        val sliderParams = LinearLayout.LayoutParams(-1, dp(42))
+        sliderParams.topMargin = dp(10)
+        hero.addView(slider, sliderParams)
+
+        val scale = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        scale.addView(label("SILENT", 9f, muted, true, 0.1f), LinearLayout.LayoutParams(0, -2, 1f))
+        scale.addView(label("MAX OUTPUT", 9f, muted, true, 0.1f).apply {
+            gravity = Gravity.END
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        hero.addView(scale)
+
+        // Action controls
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        val down = actionButton("−", "LOWER", false)
+        down.setOnClickListener { setVolume(current() - 1) }
+        val up = actionButton("+", "RAISE", true)
+        up.setOnClickListener { setVolume(current() + 1) }
+        val actionParams = LinearLayout.LayoutParams(0, dp(62), 1f)
+        actionParams.topMargin = dp(18)
+        actionParams.marginEnd = dp(8)
+        actions.addView(down, actionParams)
+        val upParams = LinearLayout.LayoutParams(0, dp(62), 1f)
+        upParams.topMargin = dp(18)
+        upParams.marginStart = dp(8)
+        actions.addView(up, upParams)
+        hero.addView(actions)
+
+        muteButton = Button(this).apply {
+            text = "MUTE MEDIA"
+            textSize = 11f
+            letterSpacing = 0.12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(white)
+            isAllCaps = false
+            background = rounded(Color.rgb(37, 48, 72), 16)
+            setOnClickListener {
+                val now = current()
+                setVolume(if (now == 0) lastNonZero else 0)
+            }
+        }
+        val muteParams = LinearLayout.LayoutParams(-1, dp(48))
+        muteParams.topMargin = dp(10)
+        hero.addView(muteButton, muteParams)
+
+        // Footer info card
+        val footer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(15), dp(14), dp(15), dp(14))
+            background = rounded(panel, 18)
+        }
+        val shield = TextView(this).apply {
+            text = "◈"
+            textSize = 22f
+            setTextColor(cyan)
+            gravity = Gravity.CENTER
+        }
+        footer.addView(shield, LinearLayout.LayoutParams(dp(34), dp(34)))
+        val footText = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), 0, 0, 0)
+        }
+        footText.addView(label("MEDIA ONLY", 10f, white, true, 0.12f))
+        footText.addView(label("Ringtone and alarm stay untouched.", 11f, muted, false, 0f).apply {
+            setPadding(0, dp(3), 0, 0)
+        })
+        footer.addView(footText)
+        val footerParams = LinearLayout.LayoutParams(-1, -2)
+        footerParams.topMargin = dp(16)
+        page.addView(footer, footerParams)
+
+        page.addView(label("DESIGNED FOR ANDROID 11+", 9f, Color.rgb(83, 103, 133), true, 0.16f).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(20), 0, 0)
+        })
+
+        setContentView(scroll)
+    }
+
+    private fun label(text: String, size: Float, color: Int, bold: Boolean, spacing: Float): TextView =
+        TextView(this).apply {
+            this.text = text
+            textSize = size
+            setTextColor(color)
+            typeface = if (bold) Typeface.create("sans-serif", Typeface.BOLD) else Typeface.create("sans-serif", Typeface.NORMAL)
+            letterSpacing = spacing
+        }
+
+    private fun actionButton(symbol: String, caption: String, primary: Boolean): Button =
+        Button(this).apply {
+            text = "$symbol    $caption"
+            textSize = 12f
+            letterSpacing = 0.08f
+            typeface = Typeface.DEFAULT_BOLD
+            isAllCaps = false
+            setTextColor(if (primary) bg else white)
+            background = if (primary) roundedGradient(cyan, blue, 16) else rounded(Color.rgb(37, 49, 74), 16)
+            stateListAnimator = null
+        }
+
+    private fun rounded(color: Int, radius: Int): GradientDrawable =
+        GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = dp(radius).toFloat()
+        }
+
+    private fun roundedGradient(start: Int, end: Int, radius: Int): GradientDrawable =
+        GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(start, end)).apply {
+            cornerRadius = dp(radius).toFloat()
+        }
+
+    private fun current() = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+
+    private fun setVolume(value: Int) {
+        val v = value.coerceIn(0, maxVolume)
+        if (v > 0) lastNonZero = v
+        audio.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0)
+        refresh()
+    }
+
+    private fun refresh() {
+        val v = current()
+        if (v > 0) lastNonZero = v
+        updating = true
+        slider.progress = v
+        updating = false
+        render(v)
+    }
+
+    private fun render(v: Int) {
+        val percent = (v * 100f / maxVolume).toInt()
+        dial.setLevel(percent)
+        valueLabel.text = if (v == 0) "OUTPUT MUTED" else "MEDIA VOLUME  •  $v / $maxVolume"
+        muteButton.text = if (v == 0) "UNMUTE MEDIA" else "MUTE MEDIA"
+    }
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private class VolumeDialView(
+        context: Context,
+        private val startColor: Int,
+        private val endColor: Int,
+        private val textColor: Int
+    ) : View(context) {
+        private val track = Paint(3).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = dp(10f)
+            strokeCap = Paint.Cap.ROUND
+            color = Color.rgb(48, 64, 91)
+        }
+        private val arc = Paint(3).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = dp(10f)
+            strokeCap = Paint.Cap.ROUND
+        }
+        private val glow = Paint(3).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = dp(2f)
+            color = Color.argb(55, 67, 226, 240)
+        }
+        private val percentPaint = Paint(3).apply {
+            color = textColor
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            textSize = dp(49f)
+        }
+        private val smallPaint = Paint(3).apply {
+            color = Color.rgb(137, 157, 187)
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            textSize = dp(10f)
+            letterSpacing = 0.08f
+        }
+        private var level = 0
+
+        fun setLevel(value: Int) {
+            level = value.coerceIn(0, 100)
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val side = min(width, height).toFloat()
+            val cx = width / 2f
+            val cy = height / 2f
+            val radius = side * 0.385f
+            val rect = RectF(cx - radius, cy - radius, cx + radius, cy + radius)
+            canvas.drawArc(rect, 135f, 270f, false, track)
+            canvas.drawArc(RectF(cx-radius-7, cy-radius-7, cx+radius+7, cy+radius+7), 135f, 270f, false, glow)
+            arc.shader = LinearGradient(0f, 0f, width.toFloat(), height.toFloat(),
+                startColor, endColor, Shader.TileMode.CLAMP)
+            if (level > 0) canvas.drawArc(rect, 135f, 270f * level / 100f, false, arc)
+            arc.shader = null
+
+            val percent = "$level%"
+            val baseline = cy - (percentPaint.ascent() + percentPaint.descent()) / 2f
+            canvas.drawText(percent, cx, baseline, percentPaint)
+            canvas.drawText("VOLUME LEVEL", cx, cy + dp(39f), smallPaint)
+
+            // Tiny top marker adds a precision-instrument feel.
+            val marker = Paint(3).apply { color = startColor; strokeWidth = dp(2f); strokeCap = Paint.Cap.ROUND }
+            canvas.drawLine(cx, cy-radius-dp(19f), cx, cy-radius-dp(12f), marker)
+        }
+
+        private fun dp(v: Float) = v * resources.displayMetrics.density
+    }
+}
+
+
+==================== ./build.gradle ====================
+plugins {
+    id 'com.android.application' version '8.7.3' apply false
+}
+
+
+==================== ./gradle.properties ====================
+org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+android.useAndroidX=true
+
+
+==================== ./settings.gradle ====================
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "RatulVolumeControl"
+include(":app")
+
